@@ -392,16 +392,16 @@ func init() {
 		"pod namespace to be balanced [$POD_NAMESPACE]",
 	)
 	flag.StringVar(
-		&ingressNamespace,
-		"ingress-namespace",
-		"",
-		"ingresses to be balanced [$INGRESS_NAMESPACE]",
-	)
-	flag.StringVar(
 		&podSelector,
 		"pod-selector",
 		"app.kubernetes.io/component=controller,app=nginx-ingress",
 		"pod selector to be balanced [$POD_SELECTOR]",
+	)
+	flag.StringVar(
+		&ingressNamespace,
+		"ingress-namespace",
+		"",
+		"ingresses to be balanced [$INGRESS_NAMESPACE]",
 	)
 	flag.StringVar(
 		&nodeSelector,

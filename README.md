@@ -20,8 +20,8 @@ services.
 
 ## Drawbacks
 
-It is well-known that DNS round-robin is not the best choice for load-balancing because of caching of DNS-responses on clien-side. So keep in mind
-if some of your nodes goes down users may still try to reach them for a long time.
+It is well-known that DNS round-robin is not the best choice for load-balancing because of caching of DNS-responses on the
+client-side. So keep in mind if some of your nodes goes down users may still try to reach them for a long time.
 
 ## How does it work?
 
