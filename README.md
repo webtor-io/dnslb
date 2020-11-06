@@ -51,7 +51,7 @@ Usage of ./dnslb:
   -dry-run
     	dry run mode [$DRY_RUN]
   -full-check-interval int
-    	full check interval in seconds [$CHECK_INTERVAL] (default 600)
+    	full check interval in seconds [$FULL_CHECK_INTERVAL] (default 600)
   -ingress-namespace string
     	ingresses to be balanced [$INGRESS_NAMESPACE]
   -json-log

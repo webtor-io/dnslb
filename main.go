@@ -467,7 +467,7 @@ func init() {
 		&fullCheckInterval,
 		"full-check-interval",
 		600,
-		"full check interval in seconds [$CHECK_INTERVAL]",
+		"full check interval in seconds [$FULL_CHECK_INTERVAL]",
 	)
 	flag.IntVar(
 		&concurrency,
