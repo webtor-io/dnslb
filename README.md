@@ -83,3 +83,9 @@ By adding special annotation to your ingress-objects you can modify **dnslb** be
 
 ## Helm chart
 You can find helm-chart [there](https://github.com/webtor-io/helm-charts/tree/master/charts/dnslb).
+
+How to install:
+```
+helm repo add webtor https://charts.webtor.io
+helm install --set cloudflare.apiKey=YOUR_API_KEY --set cloudflare.apiEmail=YOUR_API_EMAIL -n dnslb webtor/dnslb
+```
