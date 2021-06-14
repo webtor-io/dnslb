@@ -22,11 +22,24 @@ import (
 	log "github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	labels "k8s.io/apimachinery/pkg/labels"
 )
 
 const (
 	annotationPrefix string = "dnslb/"
 )
+
+type Service struct {
+	Name      string
+	Namespace string
+	IPs       []string
+}
+
+type Domain struct {
+	Name    string
+	Flags   map[string]bool
+	Service *Service
+}
 
 var (
 	podSelector       string
@@ -63,7 +76,7 @@ func main() {
 		})
 	}
 	ips := []string{}
-	domains := map[string]map[string]bool{}
+	domains := map[string]Domain{}
 	var err error
 	if daemon {
 		checkTicker := time.NewTicker(time.Duration(checkInterval) * time.Second)
@@ -83,7 +96,7 @@ func main() {
 				if fullCheck {
 					log.Debug("Clearing ips and domains cache for full check")
 					ips = []string{}
-					domains = map[string]map[string]bool{}
+					domains = map[string]Domain{}
 					fullCheck = false
 				}
 				if ips, domains, err = run(ips, domains); err != nil {
@@ -92,7 +105,7 @@ func main() {
 			}
 		}
 	} else {
-		if ips, domains, err = run(ips, domains); err != nil {
+		if _, _, err = run(ips, domains); err != nil {
 			log.WithError(err).Warn("got error")
 		}
 	}
@@ -109,7 +122,7 @@ func validate() error {
 	}
 	return nil
 }
-func run(oldIPs []string, oldDomains map[string]map[string]bool) (ips []string, domains map[string]map[string]bool, err error) {
+func run(oldIPs []string, oldDomains map[string]Domain) (ips []string, domains map[string]Domain, err error) {
 
 	ctx := context.Background()
 
@@ -123,15 +136,17 @@ func run(oldIPs []string, oldDomains map[string]map[string]bool) (ips []string, 
 		return nil, nil, errors.Wrap(err, "failed to initialize Cloudflare API")
 	}
 
-	ips, err = getIPs(ctx, cl)
+	ips, err = getNodesIPs(ctx, cl)
 	if err != nil {
-		return nil, nil, errors.Wrap(err, "failed to get ips")
+		return nil, nil, errors.Wrap(err, "failed to get nodes ips")
 	}
+	// log.Debugf("%+v", ips)
 
 	domains, err = getDomains(ctx, cl)
 	if err != nil {
-		return nil, nil, errors.Wrap(err, "failed to get hosts")
+		return nil, nil, errors.Wrap(err, "failed to get domains")
 	}
+	// log.Debugf("%+v", domains)
 
 	if len(domains) == 0 {
 		return nil, nil, errors.Wrap(err, "no domains found")
@@ -152,6 +167,7 @@ func run(oldIPs []string, oldDomains map[string]map[string]bool) (ips []string, 
 					return
 				}
 				if err = syncDNS(ctx, api, d, ips, domains[d]); err != nil {
+					log.WithError(err).Errorf("failed to sync domain=%v", d)
 					return
 				}
 			}
@@ -167,11 +183,20 @@ func run(oldIPs []string, oldDomains map[string]map[string]bool) (ips []string, 
 	return
 }
 
-func syncDNS(ctx context.Context, api *cloudflare.API, domain string, ips []string, annotations map[string]bool) error {
+func syncDNS(ctx context.Context, api *cloudflare.API, domain string, nodesIps []string, d Domain) error {
+	ips := []string{}
+	for _, a := range nodesIps {
+		for _, b := range d.Service.IPs {
+			if a == b {
+				ips = append(ips, a)
+			}
+		}
+	}
+	// log.Debugf("%v %+v %+v", domain, d.Service, ips)
 	parts := strings.Split(domain, ".")
 	zone := strings.Join(parts[len(parts)-2:], ".")
 	proxied := false
-	if v, ok := annotations["cloudflare-proxied"]; ok && v {
+	if v, ok := d.Flags["cloudflare-proxied"]; ok && v {
 		proxied = true
 	}
 	log.Debugf("processing domain=\"%s\" proxied=%v", domain, proxied)
@@ -180,6 +205,9 @@ func syncDNS(ctx context.Context, api *cloudflare.API, domain string, ips []stri
 		return errors.Wrapf(err, "failed to get zone=%v", zone)
 	}
 	recs, err := api.DNSRecords(id, cloudflare.DNSRecord{})
+	if err != nil {
+		return errors.Wrapf(err, "failed to get DNS records for domain=%v", domain)
+	}
 	for _, r := range recs {
 		if r.Name != domain || r.Type != "A" {
 			continue
@@ -229,21 +257,29 @@ func syncDNS(ctx context.Context, api *cloudflare.API, domain string, ips []stri
 	return nil
 }
 
-func getDomains(ctx context.Context, cl *kubernetes.Clientset) (map[string]map[string]bool, error) {
-	hosts := map[string]map[string]bool{}
+func getDomains(ctx context.Context, cl *kubernetes.Clientset) (map[string]Domain, error) {
+	hosts := map[string]Domain{}
+	svcs := map[string]*Service{}
 
 	ings, err := cl.NetworkingV1().Ingresses(ingressNamespace).List(ctx, metav1.ListOptions{})
 
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to get running nodes")
+		return nil, errors.Wrap(err, "failed to get ingress")
 	}
 	for _, i := range ings.Items {
+		n := i.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Name
+		svc := &Service{Name: n, Namespace: i.Namespace}
+		if s, ok := svcs[n]; ok {
+			svc = s
+		} else {
+			svcs[n] = svc
+		}
 		for _, r := range i.Spec.Rules {
-			hosts[r.Host] = map[string]bool{}
+			hosts[r.Host] = Domain{Name: r.Host, Service: svc, Flags: map[string]bool{}}
 		}
 		for _, t := range i.Spec.TLS {
 			for _, h := range t.Hosts {
-				hosts[h] = map[string]bool{}
+				hosts[h] = Domain{Name: h, Service: svc, Flags: map[string]bool{}}
 			}
 		}
 		for k, v := range i.Annotations {
@@ -251,21 +287,68 @@ func getDomains(ctx context.Context, cl *kubernetes.Clientset) (map[string]map[s
 				for _, vh := range strings.Split(v, ",") {
 					vhh := strings.TrimSpace(vh)
 					if _, ok := hosts[vhh]; ok {
-						hosts[vhh][strings.TrimPrefix(k, annotationPrefix)] = true
+						hosts[vhh].Flags[strings.TrimPrefix(k, annotationPrefix)] = true
 					}
 				}
 			}
+		}
+	}
+	for _, v := range svcs {
+		v.IPs, err = getServiceIPs(ctx, cl, v.Name, v.Namespace)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to get service ips")
 		}
 	}
 	return hosts, nil
 
 }
 
-func getIPs(ctx context.Context, cl *kubernetes.Clientset) ([]string, error) {
+func getServiceIPs(ctx context.Context, cl *kubernetes.Clientset, n string, ns string) ([]string, error) {
+	svc, err := cl.CoreV1().Services(ns).Get(ctx, n, metav1.GetOptions{})
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to find svc")
+	}
+	opts := metav1.ListOptions{}
+	opts.LabelSelector = labels.SelectorFromSet(svc.Spec.Selector).String()
+	pods, err := cl.CoreV1().Pods(ns).List(ctx, opts)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to list pods")
+	}
+	nodes := []string{}
+	for _, p := range pods.Items {
+		if p.Status.Phase == corev1.PodRunning {
+			exist := false
+			for _, n := range nodes {
+				if p.Spec.NodeName == n {
+					exist = true
+					break
+				}
+			}
+			if !exist {
+				nodes = append(nodes, p.Spec.NodeName)
+			}
+		}
+	}
+	ips, err := getIPs(ctx, cl, nodes)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get ips for service pods")
+	}
+	return ips, nil
+}
+
+func getNodesIPs(ctx context.Context, cl *kubernetes.Clientset) ([]string, error) {
 	nodes, err := getNodes(ctx, cl)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get nodes")
 	}
+	ips, err := getIPs(ctx, cl, nodes)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get ips")
+	}
+	return ips, nil
+}
+
+func getIPs(ctx context.Context, cl *kubernetes.Clientset, nodes []string) ([]string, error) {
 
 	res := []string{}
 
@@ -394,7 +477,7 @@ func init() {
 	flag.StringVar(
 		&podSelector,
 		"pod-selector",
-		"app.kubernetes.io/component=controller,app=nginx-ingress",
+		"app.kubernetes.io/name=ingress-nginx",
 		"pod selector to be balanced [$POD_SELECTOR]",
 	)
 	flag.StringVar(
@@ -460,7 +543,7 @@ func init() {
 	flag.IntVar(
 		&checkInterval,
 		"check-interval",
-		10,
+		30,
 		"check interval in seconds [$CHECK_INTERVAL]",
 	)
 	flag.IntVar(
