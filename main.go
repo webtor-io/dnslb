@@ -36,9 +36,10 @@ type Service struct {
 }
 
 type Domain struct {
-	Name    string
-	Flags   map[string]bool
-	Service *Service
+	Name         string
+	Flags        map[string]bool
+	NodeSelector string
+	Service      *Service
 }
 
 var (
@@ -136,7 +137,7 @@ func run(oldIPs []string, oldDomains map[string]Domain) (ips []string, domains m
 		return nil, nil, errors.Wrap(err, "failed to initialize Cloudflare API")
 	}
 
-	ips, err = getNodesIPs(ctx, cl)
+	ips, err = getNodesIPs(ctx, cl, "")
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "failed to get nodes ips")
 	}
@@ -146,7 +147,7 @@ func run(oldIPs []string, oldDomains map[string]Domain) (ips []string, domains m
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "failed to get domains")
 	}
-	// log.Debugf("%+v", domains)
+	log.Debugf("%+v", domains)
 
 	if len(domains) == 0 {
 		return nil, nil, errors.Wrap(err, "no domains found")
@@ -166,7 +167,7 @@ func run(oldIPs []string, oldDomains map[string]Domain) (ips []string, domains m
 				if err != nil {
 					return
 				}
-				if err = syncDNS(ctx, api, d, ips, domains[d]); err != nil {
+				if err = syncDNS(ctx, cl, api, d, ips, domains[d]); err != nil {
 					log.WithError(err).Errorf("failed to sync domain=%v", d)
 					return
 				}
@@ -183,7 +184,13 @@ func run(oldIPs []string, oldDomains map[string]Domain) (ips []string, domains m
 	return
 }
 
-func syncDNS(ctx context.Context, api *cloudflare.API, domain string, nodesIps []string, d Domain) error {
+func syncDNS(ctx context.Context, cl *kubernetes.Clientset, api *cloudflare.API, domain string, nodesIps []string, d Domain) (err error) {
+	if d.NodeSelector != "" {
+		nodesIps, err = getNodesIPs(ctx, cl, d.NodeSelector)
+		if err != nil {
+			return errors.Wrapf(err, "failed to get ips with selector=%v", d.NodeSelector)
+		}
+	}
 	ips := []string{}
 	for _, a := range nodesIps {
 		for _, b := range d.Service.IPs {
@@ -192,7 +199,7 @@ func syncDNS(ctx context.Context, api *cloudflare.API, domain string, nodesIps [
 			}
 		}
 	}
-	// log.Debugf("%v %+v %+v", domain, d.Service, ips)
+	// log.Debugf("%v %+v %+v %+v", domain, d.Service, ips, nodesIps)
 	parts := strings.Split(domain, ".")
 	zone := strings.Join(parts[len(parts)-2:], ".")
 	proxied := false
@@ -284,10 +291,24 @@ func getDomains(ctx context.Context, cl *kubernetes.Clientset) (map[string]Domai
 		}
 		for k, v := range i.Annotations {
 			if strings.HasPrefix(k, annotationPrefix) {
-				for _, vh := range strings.Split(v, ",") {
-					vhh := strings.TrimSpace(vh)
-					if _, ok := hosts[vhh]; ok {
-						hosts[vhh].Flags[strings.TrimPrefix(k, annotationPrefix)] = true
+				if k == annotationPrefix+"node-selector" {
+					pp := strings.Split(v, "]")
+					log.Debugf("%+v", pp)
+					ppp := strings.TrimPrefix(pp[0], "[")
+					ns := pp[1]
+					for _, vh := range strings.Split(ppp, ",") {
+						vhh := strings.TrimSpace(vh)
+						if e, ok := hosts[vhh]; ok {
+							e.NodeSelector = ns
+							hosts[vhh] = e
+						}
+					}
+				} else {
+					for _, vh := range strings.Split(v, ",") {
+						vhh := strings.TrimSpace(vh)
+						if _, ok := hosts[vhh]; ok {
+							hosts[vhh].Flags[strings.TrimPrefix(k, annotationPrefix)] = true
+						}
 					}
 				}
 			}
@@ -336,8 +357,8 @@ func getServiceIPs(ctx context.Context, cl *kubernetes.Clientset, n string, ns s
 	return ips, nil
 }
 
-func getNodesIPs(ctx context.Context, cl *kubernetes.Clientset) ([]string, error) {
-	nodes, err := getNodes(ctx, cl)
+func getNodesIPs(ctx context.Context, cl *kubernetes.Clientset, selector string) ([]string, error) {
+	nodes, err := getNodes(ctx, cl, selector)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get nodes")
 	}
@@ -367,13 +388,13 @@ func getIPs(ctx context.Context, cl *kubernetes.Clientset, nodes []string) ([]st
 	return res, nil
 }
 
-func getNodes(ctx context.Context, cl *kubernetes.Clientset) ([]string, error) {
+func getNodes(ctx context.Context, cl *kubernetes.Clientset, selector string) ([]string, error) {
 	runNodes, err := getRunningNodes(ctx, cl)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get running nodes")
 	}
 
-	selNodes, err := getSelectedNodes(ctx, cl)
+	selNodes, err := getSelectedNodes(ctx, cl, selector)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get running nodes")
 	}
@@ -421,14 +442,19 @@ func getRunningNodes(ctx context.Context, cl *kubernetes.Clientset) ([]string, e
 	return nodes, nil
 }
 
-func getSelectedNodes(ctx context.Context, cl *kubernetes.Clientset) ([]string, error) {
-	if nodeSelector == "" {
+func getSelectedNodes(ctx context.Context, cl *kubernetes.Clientset, selector string) ([]string, error) {
+	sel := []string{}
+	if nodeSelector != "" {
+		sel = append(sel, nodeSelector)
+	}
+	if selector != "" {
+		sel = append(sel, selector)
+	}
+	if len(sel) == 0 {
 		return []string{}, nil
 	}
 	opts := metav1.ListOptions{}
-	if podSelector != "" {
-		opts.LabelSelector = nodeSelector
-	}
+	opts.LabelSelector = strings.Join(sel, ",")
 	nodes, err := cl.CoreV1().Nodes().List(ctx, opts)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to list nodes")
