@@ -211,7 +211,7 @@ func syncDNS(ctx context.Context, cl *kubernetes.Clientset, api *cloudflare.API,
 	if err != nil {
 		return errors.Wrapf(err, "failed to get zone=%v", zone)
 	}
-	recs, err := api.DNSRecords(id, cloudflare.DNSRecord{})
+	recs, err := api.DNSRecords(ctx, id, cloudflare.DNSRecord{})
 	if err != nil {
 		return errors.Wrapf(err, "failed to get DNS records for domain=%v", domain)
 	}
@@ -221,7 +221,7 @@ func syncDNS(ctx context.Context, cl *kubernetes.Clientset, api *cloudflare.API,
 		}
 		exist := false
 		for _, ip := range ips {
-			if r.Proxied == proxied && r.Content == ip && r.Type == "A" {
+			if *r.Proxied == proxied && r.Content == ip && r.Type == "A" {
 				exist = true
 				break
 			}
@@ -229,7 +229,7 @@ func syncDNS(ctx context.Context, cl *kubernetes.Clientset, api *cloudflare.API,
 		if !exist {
 			log.Debugf("drop record name=\"%s\" ip=%s proxied=%v", domain, r.Content, r.Proxied)
 			if !dryRun {
-				err := api.DeleteDNSRecord(id, r.ID)
+				err := api.DeleteDNSRecord(ctx, id, r.ID)
 				if err != nil {
 					return errors.Wrapf(err, "failed to drop record name=\"%s\" ip=%s proxied=%v", domain, r.Content, proxied)
 				}
@@ -239,7 +239,7 @@ func syncDNS(ctx context.Context, cl *kubernetes.Clientset, api *cloudflare.API,
 	for _, ip := range ips {
 		exist := false
 		for _, r := range recs {
-			if r.Name == domain && r.Proxied == proxied && r.Content == ip && r.Type == "A" {
+			if r.Name == domain && *r.Proxied == proxied && r.Content == ip && r.Type == "A" {
 				exist = true
 				break
 			}
@@ -247,11 +247,11 @@ func syncDNS(ctx context.Context, cl *kubernetes.Clientset, api *cloudflare.API,
 		if !exist {
 			log.Debugf("add record name=\"%s\" ip=%s proxied=%v", domain, ip, proxied)
 			if !dryRun {
-				_, err := api.CreateDNSRecord(id, cloudflare.DNSRecord{
+				_, err := api.CreateDNSRecord(ctx, id, cloudflare.DNSRecord{
 					Type:    "A",
 					Name:    domain,
 					Content: ip,
-					Proxied: proxied,
+					Proxied: &proxied,
 				})
 				if err != nil {
 					return errors.Wrapf(err, "failed to add record name=\"%s\" ip=%s proxied=%v", domain, ip, proxied)
