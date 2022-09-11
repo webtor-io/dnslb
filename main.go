@@ -192,10 +192,18 @@ func syncDNS(ctx context.Context, cl *kubernetes.Clientset, api *cloudflare.API,
 		}
 	}
 	ips := []string{}
-	for _, a := range nodesIps {
-		for _, b := range d.Service.IPs {
-			if a == b {
-				ips = append(ips, a)
+	skipServiceCheck := false
+	if v, ok := d.Flags["skip-service-check"]; ok && v {
+		skipServiceCheck = true
+	}
+	if skipServiceCheck {
+		ips = nodesIps
+	} else {
+		for _, a := range nodesIps {
+			for _, b := range d.Service.IPs {
+				if a == b {
+					ips = append(ips, a)
+				}
 			}
 		}
 	}
