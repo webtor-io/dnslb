@@ -472,7 +472,12 @@ func getSelectedNodes(ctx context.Context, cl *kubernetes.Clientset, selector st
 	}
 	res := []string{}
 	for _, n := range nodes.Items {
-		res = append(res, n.Name)
+		if n.Status.Phase == corev1.NodeRunning {
+			res = append(res, n.Name)
+		}
+	}
+	if len(res) == 0 {
+		return nil, errors.Errorf("no running nodes")
 	}
 	return res, nil
 }
